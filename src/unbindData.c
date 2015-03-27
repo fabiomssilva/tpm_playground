@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
 #include <tss/tss_error.h>
 #include <tss/platform.h>
 #include <tss/tss_defines.h>
@@ -57,55 +58,62 @@ DBG("Set the SRK secret in its policy",result);
 //Do something usefull
 
 UINT32 ulDataLength;
-BYTE *rgbBoundData;
 TSS_HKEY hESS_Bind_Key;
 FILE * fin;
 FILE * fout;
-TSS_FLAG initFlags;
-BYTE encData[7];
-BYTE newPubKey[284];
 TSS_HENCDATA hEncData;
+TSS_UUID MY_UUID=BACKUP_KEY_UUID;
+BYTE encryptedData[256];
+BYTE * decryptedData;
+BYTE pass123[3];
 
-initFlags = TSS_KEY_TYPE_BIND |TSS_KEY_SIZE_2048 |TSS_KEY_AUTHORIZATION |TSS_KEY_NOT_MIGRATABLE;
-
-// Retrieve the public key
-fin =fopen("BackupESSBindKey.pub", "r");
-read(fileno(fin),newPubKey,284);
+memset(pass123,0,3);
+//Read in the encrypted data from the file
+fin=fopen("data/AES.key.enc","rb");
+read(fileno(fin),encryptedData,ulDataLength);
 fclose(fin);
 
-
-// Create a key object
-result=Tspi_Context_CreateObject( hContext,TSS_OBJECT_TYPE_RSAKEY,initFlags, &hESS_Bind_Key );
-DBG("Tspi Context CreateObject BindKey",result);
-
-// Feed the key object with the public key read from the file
-result=Tspi_SetAttribData(hESS_Bind_Key,TSS_TSPATTRIB_KEY_BLOB,TSS_TSPATTRIB_KEYBLOB_PUBLIC_KEY,284, newPubKey);
-DBG("Set Public key into new key object", result);
-
-
-// Read in the data to be encrypted
-fin=fopen("AES.key","rb");
-read(fileno(fin),encData,7);
-fclose(fin);
 
 // Create a data object , fill it with clear text and then bind it.
 result=Tspi_Context_CreateObject(hContext,TSS_OBJECT_TYPE_ENCDATA,TSS_ENCDATA_BIND,&hEncData);
 DBG("Create Data object",result);
 
-result=Tspi_Data_Bind( hEncData,hESS_Bind_Key,7,encData);
-DBG("Bind data",result);
+result = Tspi_Context_GetKeyByUUID(hContext,TSS_PS_TYPE_SYSTEM,MY_UUID,&hESS_Bind_Key);
+DBG("Get unbinding key",result);
+
+result = Tspi_Key_LoadKey(hESS_Bind_Key,hSRK);
+
+DBG("Loaded Key",result);
 
 
-// Get the encrypted data out of the data object
-result=Tspi_GetAttribData( hEncData,TSS_TSPATTRIB_ENCDATA_BLOB,TSS_TSPATTRIB_ENCDATABLOB_BLOB,&ulDataLength,&rgbBoundData);
+TSS_HPOLICY hBackup_Policy;
+// Create a policy for the new key. Set its password to ?~@~\123?~@~]
+result=Tspi_Context_CreateObject(hContext,TSS_OBJECT_TYPE_POLICY,TSS_POLICY_USAGE, &hBackup_Policy);
+DBG("Create a backup policy object",result);
 
-DBG("Get encrypted data", result);
-// Write the encrypted data out to a file called Bound.data
+result=Tspi_Policy_SetSecret(hBackup_Policy,TSS_SECRET_MODE_PLAIN,3,pass123);
+DBG("Set backup policy object secret",result);
 
-fout=fopen("Bound.data", "wb");
-write(fileno(fout),rgbBoundData,ulDataLength);
+// Assign the key?~@~Ys policy to the key object
+
+result=Tspi_Policy_AssignToObject( hBackup_Policy,hESS_Bind_Key);
+DBG("Assign the keys policy to the key", result);
+
+
+
+
+
+result = Tspi_SetAttribData(hEncData,TSS_TSPATTRIB_ENCDATA_BLOB,TSS_TSPATTRIB_ENCDATABLOB_BLOB,256,encryptedData);
+DBG("Load Data",result);
+
+// Use the Unbinding key to decrypt the encrypted data
+// in the BindData object, and return it
+result=Tspi_Data_Unbind(hEncData,hESS_Bind_Key,&ulDataLength,&decryptedData);
+DBG("Unbind",result);
+
+fout=fopen("data/originalAES.key", "wb");
+write(fileno(fout),decryptedData,ulDataLength);
 fclose(fout);
-
 
 //Done doing something usefull
 
